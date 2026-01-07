@@ -152,10 +152,10 @@ elif analysis_type == "Segmentatie-maskers":
 
         # --- Kolom mapping ---
         col_mapping = {
-            "Hoogte": "height_quantile_95",
-            "Diameter": "diameter_circle",
-            "ExG": "ExG",
-            "ExR": "ExR"
+            "Hoogte": "height_p95",
+            "Diameter": "diameter",
+            "ExG": "ExG_median",
+            "ExR": "ExR_median"
         }
         col_to_plot = col_mapping[property_choice]
         values = gdf[col_to_plot].values
@@ -233,4 +233,5 @@ elif analysis_type == "Segmentatie-maskers":
             plt.tight_layout()
             st.pyplot(fig_map)
             plt.close(fig_map)
+
 
