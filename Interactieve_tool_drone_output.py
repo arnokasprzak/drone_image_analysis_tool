@@ -126,12 +126,6 @@ elif analysis_type == "Segmentatie-maskers":
         options=["Hoogte", "Diameter", "ExG", "ExR"]
     )
 
-    # Pad naar GeoPackage i.p.v. upload
-    gpkg_path = st.text_input(
-        "📁 Pad naar GeoPackage (.gpkg):",
-        placeholder="bijv. data/segmentatie.gpkg"
-    )
-
     if gpkg_path:
         if not os.path.exists(gpkg_path):
             st.error("❌ Bestandspad bestaat niet.")
@@ -232,3 +226,4 @@ elif analysis_type == "Segmentatie-maskers":
                 plt.tight_layout()
                 st.pyplot(fig_map)
                 plt.close(fig_map)
+
