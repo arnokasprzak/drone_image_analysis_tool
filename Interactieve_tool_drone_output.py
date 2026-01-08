@@ -7,6 +7,7 @@ import time
 import geopandas as gpd
 import pandas as pd
 import contextily as ctx
+from pathlib import Path
 
 st.title("🌿 Analyse Drone Output")
 
@@ -115,117 +116,129 @@ elif analysis_type == "Segmentatie-maskers":
     st.info("Segmentatie-analyse: kies eerst de eigenschap die je wilt analyseren.")
 
     # Kies eigenschap
-    # Pad naar GeoPackage i.p.v. upload
-    gpkg_path = st.text_input(
-        "📁 Pad naar GeoPackage (.gpkg):",
-        placeholder="bijv. data/segmentatie.gpkg"
-    )
-    
     property_choice = st.selectbox(
         label="📈 Kies eigenschap om te analyseren:",
         options=["Hoogte", "Diameter", "ExG", "ExR"]
     )
 
-    if gpkg_path:
-        if not os.path.exists(gpkg_path):
+    # Pad normalisatie helper
+    def normalize_path(path_str: str) -> str:
+        path_str = path_str.strip().strip('"').strip("'")
+        return str(Path(path_str))
+
+    # Pad naar GeoPackage i.p.v. upload
+    gpkg_path_input = st.text_input(
+        "📁 Pad naar GeoPackage (.gpkg):",
+        placeholder=r"C:\data\segmentatie.gpkg of /data/segmentatie.gpkg"
+    )
+
+    if gpkg_path_input:
+        gpkg_path = normalize_path(gpkg_path_input)
+
+        st.caption(f"📂 Gebruikt pad:\n{gpkg_path}")
+
+        if not Path(gpkg_path).exists():
             st.error("❌ Bestandspad bestaat niet.")
+            st.stop()
+
+        # --- Laad en cache GeoDataFrame ---
+        if "gdf" not in st.session_state or st.session_state.get("gdf_path") != gpkg_path:
+            load_bar = st.progress(0)
+            load_status = st.empty()
+
+            load_status.text("📥 GeoPackage inlezen...")
+            load_bar.progress(0.2)
+
+            gdf = gpd.read_file(gpkg_path)
+
+            load_bar.progress(0.8)
+            load_status.text(f"📂 {len(gdf)} segmenten ingelezen")
+
+            st.session_state.gdf = gdf
+            st.session_state.gdf_path = gpkg_path
+
+            load_bar.progress(1.0)
+            load_status.text("✅ Bestand succesvol geladen")
         else:
-            # --- Laad en cache GeoDataFrame ---
-            if "gdf" not in st.session_state or st.session_state.get("gdf_path") != gpkg_path:
-                load_bar = st.progress(0)
-                load_status = st.empty()
+            gdf = st.session_state.gdf
 
-                load_status.text("📥 GeoPackage inlezen...")
-                load_bar.progress(0.2)
+        # --- Kolom mapping ---
+        col_mapping = {
+            "Hoogte": "height_p95",
+            "Diameter": "diameter",
+            "ExG": "ExG_median",
+            "ExR": "ExR_median"
+        }
 
-                gdf = gpd.read_file(gpkg_path)
+        col_to_plot = col_mapping[property_choice]
 
-                load_bar.progress(0.8)
-                load_status.text(f"📂 {len(gdf)} segmenten ingelezen")
+        if col_to_plot not in gdf.columns:
+            st.error(f"❌ Kolom '{col_to_plot}' niet gevonden in GeoPackage.")
+            st.stop()
 
-                st.session_state.gdf = gdf
-                st.session_state.gdf_path = gpkg_path
+        values = gdf[col_to_plot].values
 
-                load_bar.progress(1.0)
-                load_status.text("✅ Bestand succesvol geladen")
-            else:
-                gdf = st.session_state.gdf
+        # --- Histogram ---
+        st.subheader(f"📊 Histogram van {property_choice}")
+        fig_hist, ax_hist = plt.subplots()
+        ax_hist.hist(values, bins=50, color="gray", edgecolor="black")
+        ax_hist.set_xlabel(property_choice)
+        ax_hist.set_ylabel("Aantal segmenten")
+        st.pyplot(fig_hist)
 
-            # --- Kolom mapping ---
-            col_mapping = {
-                "Hoogte": "height_p95",
-                "Diameter": "diameter",
-                "ExG": "ExG_median",
-                "ExR": "ExR_median"
-            }
+        # --- Filter sliders ---
+        st.subheader("🎚️ Filter segmenten")
+        min_val, max_val = float(values.min()), float(values.max())
+        lower = st.slider("Ondergrens", min_val, max_val, min_val)
+        upper = st.slider("Bovengrens", min_val, max_val, max_val)
 
-            col_to_plot = col_mapping[property_choice]
+        filtered = gdf[(gdf[col_to_plot] >= lower) & (gdf[col_to_plot] <= upper)]
 
-            if col_to_plot not in gdf.columns:
-                st.error(f"❌ Kolom '{col_to_plot}' niet gevonden in GeoPackage.")
-                st.stop()
+        st.subheader(f"🗺️ Kaartweergave van gefilterde segmenten ({len(filtered)})")
 
-            values = gdf[col_to_plot].values
+        fig_map, ax_map = plt.subplots(figsize=(20, 10), dpi=150)
 
-            # --- Histogram ---
-            st.subheader(f"📊 Histogram van {property_choice}")
-            fig_hist, ax_hist = plt.subplots()
-            ax_hist.hist(values, bins=50, color="gray", edgecolor="black")
-            ax_hist.set_xlabel(property_choice)
-            ax_hist.set_ylabel("Aantal segmenten")
-            st.pyplot(fig_hist)
+        try:
+            # CRS check
+            if filtered.crs is None:
+                st.warning("Geen CRS gevonden, stel in op EPSG:32631.")
+                filtered = filtered.set_crs(epsg=32631)
 
-            # --- Filter sliders ---
-            st.subheader("🎚️ Filter segmenten")
-            min_val, max_val = float(values.min()), float(values.max())
-            lower = st.slider("Ondergrens", min_val, max_val, min_val)
-            upper = st.slider("Bovengrens", min_val, max_val, max_val)
+            # Projecteer naar Web Mercator
+            filtered_3857 = filtered.to_crs(epsg=3857)
 
-            filtered = gdf[(gdf[col_to_plot] >= lower) & (gdf[col_to_plot] <= upper)]
+            # Gebruik centroiden voor performance
+            filtered_points = filtered_3857.copy()
+            filtered_points["geometry"] = filtered_points.centroid
 
-            st.subheader(f"🗺️ Kaartweergave van gefilterde segmenten ({len(filtered)})")
+            filtered_points.plot(
+                ax=ax_map,
+                color="red",
+                markersize=10,
+                alpha=0.8
+            )
 
-            fig_map, ax_map = plt.subplots(figsize=(20, 10), dpi=150)
+            ctx.add_basemap(
+                ax=ax_map,
+                source=ctx.providers.Esri.WorldImagery,
+                crs=filtered_3857.crs.to_string(),
+                zoom=20
+            )
 
-            try:
-                # CRS check
-                if filtered.crs is None:
-                    st.warning("Geen CRS gevonden, stel in op EPSG:32631.")
-                    filtered = filtered.set_crs(epsg=32631)
+            ax_map.set_axis_off()
+            plt.tight_layout()
+            st.pyplot(fig_map)
+            plt.close(fig_map)
 
-                # Projecteer naar Web Mercator
-                filtered_3857 = filtered.to_crs(epsg=3857)
+        except Exception as e:
+            st.warning(f"Kaartweergave mislukt: {e}")
+            filtered.plot(column=col_to_plot, ax=ax_map, cmap="terrain", legend=True)
+            ax_map.set_axis_off()
+            plt.tight_layout()
+            st.pyplot(fig_map)
+            plt.close(fig_map)
 
-                # Gebruik centroiden voor performance
-                filtered_points = filtered_3857.copy()
-                filtered_points["geometry"] = filtered_points.centroid
 
-                filtered_points.plot(
-                    ax=ax_map,
-                    color="red",
-                    markersize=10,
-                    alpha=0.8
-                )
-
-                ctx.add_basemap(
-                    ax=ax_map,
-                    source=ctx.providers.Esri.WorldImagery,
-                    crs=filtered_3857.crs.to_string(),
-                    zoom=20
-                )
-
-                ax_map.set_axis_off()
-                plt.tight_layout()
-                st.pyplot(fig_map)
-                plt.close(fig_map)
-
-            except Exception as e:
-                st.warning(f"Kaartweergave mislukt: {e}")
-                filtered.plot(column=col_to_plot, ax=ax_map, cmap="terrain", legend=True)
-                ax_map.set_axis_off()
-                plt.tight_layout()
-                st.pyplot(fig_map)
-                plt.close(fig_map)
 
 
 
