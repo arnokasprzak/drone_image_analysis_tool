@@ -1,162 +1,239 @@
 import streamlit as st
-import geopandas as gpd
-import matplotlib.pyplot as plt
-import contextily as ctx
-import tempfile
-from pathlib import Path
+import rasterio
 import numpy as np
+import matplotlib.pyplot as plt
+import os
+import time
+import geopandas as gpd
+import pandas as pd
+import contextily as ctx
 
-st.set_page_config(layout="wide")
-st.title("🌿 Analyse Segmentatie-maskers")
+st.title("🌿 Analyse Drone Output")
 
-# =========================================================
-# Helper: upload veilig opslaan
-# =========================================================
+# Kies analyse type
+analysis_type = st.radio("🔍 Kies type analyse:", ["Orthomosaic", "Segmentatie-maskers"])
 
-def save_uploaded_file(uploaded_file):
-    base = Path(tempfile.gettempdir()) / "streamlit_segmentatie"
-    base.mkdir(parents=True, exist_ok=True)
-    path = base / uploaded_file.name
+if analysis_type == "Orthomosaic":
+    file_path = st.text_input("📁 Pad naar orthomosaic (.tif):", "")
+    index_choice = st.selectbox("📈 Kies index:", ["Excess Green (ExG)", "Excess Red (ExR)"])
+    preview_mode = st.checkbox("Gebruik preview (sneller, lagere resolutie)", value=True)
 
-    if not path.exists():
-        with open(path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+    # check of de berekening al is gedaan
+    if "index" not in st.session_state:
+        st.session_state.index = None
 
-    return str(path)
+    # --- Berekening starten ---
+    if st.button("🚀 Start berekening"):
+        if not os.path.exists(file_path):
+            st.error("Bestandspad bestaat niet!")
+        else:
+            with rasterio.open(file_path) as src:
+                width, height = src.width, src.height
+                st.write(f"Afmetingen: {width} x {height}")
+                progress_bar = st.progress(0)
+                status_text = st.empty()
 
-# =========================================================
-# Upload GeoPackage
-# =========================================================
+                start = time.time()
 
-uploaded_gpkg = st.file_uploader(
-    "📁 Upload GeoPackage (.gpkg)",
-    type=["gpkg"]
-)
+                if preview_mode:
+                    # Preview op lagere resolutie
+                    step = 20
+                    img = src.read(
+                        out_shape=(src.count, height // step, width // step),
+                        resampling=rasterio.enums.Resampling.bilinear
+                    )
+                    R, G, B = img[0].astype(np.float32), img[1].astype(np.float32), img[2].astype(np.float32)
+                    sumRGB = R+G+B
+                    sumRGB = np.where(sumRGB == 0, 1e-6, sumRGB)
+                    if index_choice == "Excess Green (ExG)":
+                        index = (2 * G - R - B)/sumRGB
+                    else:
+                        index = (1.4 * R - G)/sumRGB
+                    progress_bar.progress(1.0)
+                    status_text.text("✅ Preview berekend.")
+                else:
+                    # Volledige berekening 
+                    profile = src.profile
+                    index = np.zeros((height, width), dtype=np.float32)
+                    total_blocks = sum(1 for _ in src.block_windows(1))
+                    for i, (ji, window) in enumerate(src.block_windows(1)):
+                        img = src.read(window=window)
+                        R, G, B = img[0].astype(np.float32), img[1].astype(np.float32), img[2].astype(np.float32)
+                        sumRGB = R+G+B
+                        sumRGB = np.where(sumRGB == 0, 1e-6, sumRGB)
+                        if index_choice == "Excess Green (ExG)":
+                            chunk = (2 * G - R - B)/sumRGB
+                        else:
+                            chunk = (1.4 * R - G)/sumRGB
+                        row_off, col_off = window.row_off, window.col_off
+                        index[row_off:row_off+window.height, col_off:col_off+window.width] = chunk
+                        progress = (i + 1) / total_blocks
+                        progress_bar.progress(progress)
+                        elapsed = time.time() - start
+                        est_total = elapsed / (i + 1) * total_blocks
+                        remaining = est_total - elapsed
+                        status_text.text(f"{progress*100:.1f}% voltooid – nog ~{remaining/60:.1f} min")
 
-if uploaded_gpkg is None:
-    st.info("Upload een GeoPackage om te starten.")
-    st.stop()
+                    status_text.text("✅ Berekening voltooid!")
 
-gpkg_path = save_uploaded_file(uploaded_gpkg)
+            # Sla het resultaat op in session_state zodat het blijft bestaan
+            st.session_state.index = index
+            st.success("✅ Berekening klaar – je kunt nu de sliders gebruiken.")
 
-# =========================================================
-# Laad GeoDataFrame (gecached)
-# =========================================================
+    # --- Visualisatie ---
+    if st.session_state.index is not None:
+        index = st.session_state.index
 
-@st.cache_data(show_spinner=True)
-def load_gpkg(path):
-    return gpd.read_file(path)
+        st.subheader(f"🖼️ {index_choice} – Heatmap")
+        fig, ax = plt.subplots()
+        cax = ax.imshow(index, cmap="viridis")
+        fig.colorbar(cax, ax=ax, label=index_choice)
+        ax.axis("off")
+        st.pyplot(fig)
 
-gdf = load_gpkg(gpkg_path)
+        st.subheader("📊 Histogram van indexwaarden")
+        fig2, ax2 = plt.subplots()
+        ax2.hist(index.flatten(), bins=100, color="gray", edgecolor="black")
+        ax2.set_xlabel("Indexwaarde")
+        ax2.set_ylabel("Aantal pixels")
+        st.pyplot(fig2)
 
-st.success(f"✅ {len(gdf)} segmenten geladen")
+        st.subheader("🎚️ Filter outliers")
+        min_val, max_val = float(np.min(index)), float(np.max(index))
+        lower = st.slider("Ondergrens", min_val, max_val, min_val)
+        upper = st.slider("Bovengrens", min_val, max_val, max_val)
 
-# =========================================================
-# Kies eigenschap
-# =========================================================
+        filtered = np.clip(index, lower, upper)
 
-property_choice = st.selectbox(
-    "📈 Kies eigenschap om te analyseren:",
-    ["Hoogte", "Diameter", "ExG", "ExR"]
-)
+        fig3, ax3 = plt.subplots()
+        cax2 = ax3.imshow(filtered, cmap="viridis")
+        fig3.colorbar(cax2, ax=ax3, label=f"{index_choice} (gefilterd)")
+        ax3.axis("off")
+        st.pyplot(fig3)
 
-col_mapping = {
-    "Hoogte": "height_p95",
-    "Diameter": "diameter",
-    "ExG": "ExG_median",
-    "ExR": "ExR_median"
-}
+elif analysis_type == "Segmentatie-maskers":
+    st.info("Segmentatie-analyse: kies eerst de eigenschap die je wilt analyseren.")
 
-col = col_mapping[property_choice]
-
-if col not in gdf.columns:
-    st.error(f"❌ Kolom '{col}' niet gevonden in GeoPackage.")
-    st.stop()
-
-values = gdf[col].dropna().values
-
-# =========================================================
-# Histogram
-# =========================================================
-
-st.subheader(f"📊 Histogram van {property_choice}")
-
-fig_hist, ax_hist = plt.subplots()
-ax_hist.hist(values, bins=50, color="gray", edgecolor="black")
-ax_hist.set_xlabel(property_choice)
-ax_hist.set_ylabel("Aantal segmenten")
-st.pyplot(fig_hist)
-plt.close(fig_hist)
-
-# =========================================================
-# Filters
-# =========================================================
-
-st.subheader("🎚️ Filter segmenten")
-
-min_val, max_val = float(values.min()), float(values.max())
-
-lower, upper = st.slider(
-    "Selecteer bereik",
-    min_val,
-    max_val,
-    (min_val, max_val)
-)
-
-filtered = gdf[(gdf[col] >= lower) & (gdf[col] <= upper)]
-
-st.caption(f"🔎 {len(filtered)} van {len(gdf)} segmenten geselecteerd")
-
-# =========================================================
-# Kaartweergave
-# =========================================================
-
-st.subheader("🗺️ Kaartweergave")
-
-fig_map, ax_map = plt.subplots(figsize=(20, 10), dpi=150)
-
-try:
-    # CRS check
-    if filtered.crs is None:
-        st.warning("Geen CRS gevonden — ingesteld op EPSG:32631.")
-        filtered = filtered.set_crs(epsg=32631)
-
-    # Projecteer naar Web Mercator
-    filtered_3857 = filtered.to_crs(epsg=3857)
-
-    # Gebruik centroiden voor performance
-    points = filtered_3857.copy()
-    points["geometry"] = points.centroid
-
-    points.plot(
-        ax=ax_map,
-        color="red",
-        markersize=8,
-        alpha=0.8
+    # Vraag gebruiker welke eigenschap
+    property_choice = st.selectbox(
+        label="📈 Kies eigenschap om te analyseren:",
+        options=["Hoogte", "Diameter", "ExG", "ExR"]
     )
 
-    ctx.add_basemap(
-        ax=ax_map,
-        source=ctx.providers.Esri.WorldImagery,
-        crs=filtered_3857.crs.to_string(),
-        zoom=20
-    )
+    # Upload GeoPackage
+    gpkg_file = st.file_uploader("📁 Upload GeoPackage (.gpkg)", type="gpkg")
 
-    ax_map.set_axis_off()
-    st.pyplot(fig_map)
-    plt.close(fig_map)
+    if gpkg_file is not None:
+        # --- Laad en bewaar in session_state ---
+        if "gdf" not in st.session_state:
+            load_bar = st.progress(0)
+            load_status = st.empty()
 
-except Exception as e:
-    st.warning(f"⚠️ Basemap mislukt: {e}")
+            load_status.text("📥 Bestand ontvangen, starten met inlezen...")
+            time.sleep(0.2)
+            load_bar.progress(0.2)
 
-    filtered.plot(
-        column=col,
-        ax=ax_map,
-        cmap="terrain",
-        legend=True
-    )
+            gdf = gpd.read_file(gpkg_file)
+            time.sleep(0.2)
+            load_bar.progress(0.6)
+            load_status.text(f"📂 {len(gdf)} segmenten ingelezen...")
 
-    ax_map.set_axis_off()
-    st.pyplot(fig_map)
-    plt.close(fig_map)
+            # Optionele berekening
+            if property_choice in ["ExG", "ExR"]:
+                pass
+            time.sleep(0.2)
+            load_bar.progress(1.0)
+            load_status.text(f"✅ {len(gdf)} segmenten geladen en verwerkt.")
 
+            st.session_state.gdf = gdf
+            st.success(f"✅ Klaar! {len(gdf)} segmenten beschikbaar voor analyse.")
+        else:
+            gdf = st.session_state.gdf
+
+        # --- Kolom mapping ---
+        col_mapping = {
+            "Hoogte": "height_quantile_95",
+            "Diameter": "diameter_circle",
+            "ExG": "ExG",
+            "ExR": "ExR"
+            "Hoogte": "height_p95",
+            "Diameter": "diameter",
+            "ExG": "ExG_median",
+            "ExR": "ExR_median"
+        }
+        col_to_plot = col_mapping[property_choice]
+        values = gdf[col_to_plot].values
+
+        # --- Histogram ---
+        st.subheader(f"📊 Histogram van {property_choice}")
+        fig_hist, ax_hist = plt.subplots()
+        ax_hist.hist(values, bins=50, color="gray", edgecolor="black")
+        ax_hist.set_xlabel(property_choice)
+        ax_hist.set_ylabel("Aantal segmenten")
+        st.pyplot(fig_hist)
+
+        # --- Filter sliders ---
+        st.subheader("🎚️ Filter segmenten")
+        min_val, max_val = float(values.min()), float(values.max())
+        lower = st.slider("Ondergrens", min_val, max_val, min_val)
+        upper = st.slider("Bovengrens", min_val, max_val, max_val)
+
+        filtered = gdf[(gdf[col_to_plot] >= lower) & (gdf[col_to_plot] <= upper)]
+
+        # --- Progress bar bij kaartweergave ---
+        map_bar = st.progress(0)
+        map_status = st.empty()
+
+        st.subheader(f"🗺️ Kaartweergave van gefilterde segmenten ({len(filtered)})")
+
+        fig_map, ax_map = plt.subplots(figsize=(20, 10), dpi=150)
+
+        try:
+            map_status.text("🗺️ Voorbereiden van kaartdata...")
+            map_bar.progress(0.2)
+            time.sleep(0.1)
+
+            # Controleer CRS en stel in als dat ontbreekt
+            if filtered.crs is None:
+                st.warning("Geen CRS gevonden, stel in op EPSG:32631.")
+                filtered = filtered.set_crs(epsg=32631)
+
+            # Herprojecteer naar Web Mercator (EPSG:3857)
+            filtered_3857 = filtered.to_crs(epsg=3857)
+            map_bar.progress(0.5)
+
+            filtered_points = filtered_3857.copy()
+            filtered_points["geometry"] = filtered_points.centroid
+
+            filtered_points.plot(
+                ax=ax_map,
+                color='red',
+                markersize=10,  
+                alpha=0.8
+            )
+            map_bar.progress(0.7)
+
+            # Voeg satellietachtergrond toe
+            map_status.text("🛰️ Basemap laden...")
+            ctx.add_basemap(
+                ax_map,
+                source=ctx.providers.Esri.WorldImagery,
+                crs=filtered_3857.crs.to_string(),
+                zoom=20
+            )
+            map_bar.progress(0.9)
+
+            ax_map.set_axis_off()
+            plt.tight_layout()
+            st.pyplot(fig_map)
+            map_bar.progress(1.0)
+            map_status.text("✅ Kaart succesvol weergegeven.")
+            plt.close(fig_map)
+
+        except Exception as e:
+            st.warning(f"Kaartweergave mislukt: {e}")
+            filtered.plot(column=col_to_plot, ax=ax_map, cmap="terrain", legend=True)
+            ax_map.set_axis_off()
+            plt.tight_layout()
+            st.pyplot(fig_map)
+            plt.close(fig_map)
