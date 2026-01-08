@@ -115,15 +115,15 @@ elif analysis_type == "Segmentatie-maskers":
     st.info("Segmentatie-analyse: kies eerst de eigenschap die je wilt analyseren.")
 
     # Kies eigenschap
-    property_choice = st.selectbox(
-        label="📈 Kies eigenschap om te analyseren:",
-        options=["Hoogte", "Diameter", "ExG", "ExR"]
-    )
-
     # Pad naar GeoPackage i.p.v. upload
     gpkg_path = st.text_input(
         "📁 Pad naar GeoPackage (.gpkg):",
         placeholder="bijv. data/segmentatie.gpkg"
+    )
+    
+    property_choice = st.selectbox(
+        label="📈 Kies eigenschap om te analyseren:",
+        options=["Hoogte", "Diameter", "ExG", "ExR"]
     )
 
     if gpkg_path:
@@ -226,6 +226,7 @@ elif analysis_type == "Segmentatie-maskers":
                 plt.tight_layout()
                 st.pyplot(fig_map)
                 plt.close(fig_map)
+
 
 
 
