@@ -115,12 +115,6 @@ if analysis_type == "Orthomosaic":
 elif analysis_type == "Segmentatie-maskers":
     st.info("Segmentatie-analyse: kies eerst de eigenschap die je wilt analyseren.")
 
-    # Kies eigenschap
-    property_choice = st.selectbox(
-        label="📈 Kies eigenschap om te analyseren:",
-        options=["Hoogte", "Diameter", "ExG", "ExR"]
-    )
-
     # Pad normalisatie helper
     def normalize_path(path_str: str) -> str:
         path_str = path_str.strip().strip('"').strip("'")
@@ -130,6 +124,12 @@ elif analysis_type == "Segmentatie-maskers":
     gpkg_path_input = st.text_input(
         "📁 Pad naar GeoPackage (.gpkg):",
         placeholder=r"C:\data\segmentatie.gpkg of /data/segmentatie.gpkg"
+    )
+
+    # Kies eigenschap
+    property_choice = st.selectbox(
+        label="📈 Kies eigenschap om te analyseren:",
+        options=["Hoogte", "Diameter", "ExG", "ExR"]
     )
 
     if gpkg_path_input:
@@ -237,6 +237,7 @@ elif analysis_type == "Segmentatie-maskers":
             plt.tight_layout()
             st.pyplot(fig_map)
             plt.close(fig_map)
+
 
 
 
