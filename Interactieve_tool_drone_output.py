@@ -112,6 +112,12 @@ if analysis_type == "Orthomosaic":
         st.pyplot(fig3)
 
 elif analysis_type == "Segmentatie-maskers":
+    # Pad naar GeoPackage i.p.v. upload
+    gpkg_path = st.text_input(
+        "📁 Pad naar GeoPackage (.gpkg):",
+        placeholder="bijv. data/segmentatie.gpkg"
+    )
+    
     st.info("Segmentatie-analyse: kies eerst de eigenschap die je wilt analyseren.")
 
     # Kies eigenschap
@@ -124,11 +130,6 @@ elif analysis_type == "Segmentatie-maskers":
     gpkg_path = st.text_input(
         "📁 Pad naar GeoPackage (.gpkg):",
         placeholder="bijv. data/segmentatie.gpkg"
-    )
-    
-    property_choice = st.selectbox(
-        label="📈 Kies eigenschap om te analyseren:",
-        options=["Hoogte", "Diameter", "ExG", "ExR"]
     )
 
     if gpkg_path:
