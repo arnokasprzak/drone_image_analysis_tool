@@ -6,13 +6,21 @@ import geopandas as gpd
 import contextily as ctx
 import tempfile
 from pathlib import Path
+import os
 import time
 
 st.set_page_config(layout="wide")
 st.title("🌿 Analyse Drone Output")
 
 # =========================================================
-# Helpers
+# CONFIG — HIER MAG JE AAN ZITTEN
+# =========================================================
+
+MAX_TIF_SIZE_MB = 300   # <<< HARD LIMIET (veilig voor Streamlit Cloud)
+PREVIEW_FACTOR = 25
+
+# =========================================================
+# HELPERS
 # =========================================================
 
 def save_uploaded_file(uploaded_file, subdir):
@@ -22,7 +30,7 @@ def save_uploaded_file(uploaded_file, subdir):
     if not path.exists():
         with open(path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-    return str(path)
+    return path
 
 # =========================================================
 # UI
@@ -34,7 +42,7 @@ analysis_type = st.radio(
 )
 
 # =========================================================
-# ORTHOMOSAIC (PREVIEW-ONLY, STABIEL)
+# ORTHOMOSAIC — CRASH-PROOF
 # =========================================================
 
 if analysis_type == "Orthomosaic":
@@ -44,26 +52,39 @@ if analysis_type == "Orthomosaic":
         type=["tif", "tiff"]
     )
 
+    if uploaded_file is None:
+        st.info("Upload een orthomosaic om te starten.")
+        st.stop()
+
+    # -------------------------------
+    # FILESIZE CHECK (KRITIEK)
+    # -------------------------------
+
+    size_mb = uploaded_file.size / (1024 * 1024)
+
+    st.caption(f"📦 Bestandsgrootte: {size_mb:.1f} MB")
+
+    if size_mb > MAX_TIF_SIZE_MB:
+        st.error(
+            f"❌ Bestand is te groot voor web-analyse ({size_mb:.0f} MB).\n\n"
+            f"Maximum toegestaan: {MAX_TIF_SIZE_MB} MB.\n\n"
+            "➡️ Gebruik preview-export of voer analyse lokaal uit."
+        )
+        st.stop()
+
+    # -------------------------------
+    # PAS NU OPSLAAN & OPENEN
+    # -------------------------------
+
+    tif_path = save_uploaded_file(uploaded_file, "tifs")
+
     index_choice = st.selectbox(
         "📈 Kies index:",
         ["Excess Green (ExG)", "Excess Red (ExR)"]
     )
 
-    preview_factor = st.slider(
-        "🔽 Downsampling factor (lager = scherper, hoger = sneller)",
-        min_value=5,
-        max_value=50,
-        value=20,
-        step=5
-    )
+    if st.button("🚀 Bereken preview-index"):
 
-    if uploaded_file is None:
-        st.info("Upload een orthomosaic om te starten.")
-        st.stop()
-
-    tif_path = save_uploaded_file(uploaded_file, "tifs")
-
-    if st.button("🚀 Bereken index (preview)"):
         with rasterio.open(tif_path) as src:
 
             if src.count < 3:
@@ -71,11 +92,10 @@ if analysis_type == "Orthomosaic":
                 st.stop()
 
             width, height = src.width, src.height
-            st.caption(f"📐 Originele resolutie: {width} × {height}")
+            st.caption(f"📐 Resolutie: {width} × {height}")
 
-            # --- VEILIGE PREVIEW RESOLUTIE ---
-            out_h = max(1, height // preview_factor)
-            out_w = max(1, width // preview_factor)
+            out_h = max(1, height // PREVIEW_FACTOR)
+            out_w = max(1, width // PREVIEW_FACTOR)
 
             start = time.time()
 
@@ -97,24 +117,21 @@ if analysis_type == "Orthomosaic":
                 index = (1.4 * R - G) / sumRGB
 
             st.session_state.index = index
-            st.session_state.preview_shape = (out_h, out_w)
-
             elapsed = time.time() - start
+
             st.success(f"✅ Preview berekend in {elapsed:.2f} s")
 
-    # =====================================================
+    # -------------------------------
     # VISUALISATIE
-    # =====================================================
+    # -------------------------------
 
     if "index" in st.session_state:
 
         index = st.session_state.index
-        out_h, out_w = st.session_state.preview_shape
 
         col1, col2 = st.columns(2)
 
         with col1:
-            st.subheader(f"🖼️ {index_choice} – Preview ({out_w}×{out_h})")
             fig, ax = plt.subplots()
             im = ax.imshow(index, cmap="viridis")
             fig.colorbar(im, ax=ax)
@@ -123,40 +140,11 @@ if analysis_type == "Orthomosaic":
             plt.close(fig)
 
         with col2:
-            st.subheader("📊 Histogram")
             fig2, ax2 = plt.subplots()
             ax2.hist(index.flatten(), bins=100, color="gray")
-            ax2.set_xlabel("Indexwaarde")
-            ax2.set_ylabel("Aantal pixels")
             st.pyplot(fig2)
             plt.close(fig2)
 
-        st.subheader("🎚️ Filter outliers")
-
-        min_val = float(np.nanmin(index))
-        max_val = float(np.nanmax(index))
-
-        lower, upper = st.slider(
-            "Bereik",
-            min_val,
-            max_val,
-            (min_val, max_val)
-        )
-
-        filtered = np.clip(index, lower, upper)
-
-        fig3, ax3 = plt.subplots()
-        im2 = ax3.imshow(filtered, cmap="viridis")
-        fig3.colorbar(im2, ax=ax3)
-        ax3.axis("off")
-        st.pyplot(fig3)
-        plt.close(fig3)
-
-        st.info(
-            "ℹ️ Dit is een **preview-analyse**.\n\n"
-            "Volledige resolutie verwerking wordt bewust geblokkeerd\n"
-            "om crashes en 502-errors te voorkomen."
-        )
 
 # =========================================================
 # SEGMENTATIE MASKERS (ONGEWIJZIGD & STABIEL)
@@ -242,3 +230,4 @@ elif analysis_type == "Segmentatie-maskers":
     ax_map.set_axis_off()
     st.pyplot(fig_map)
     plt.close(fig_map)
+
